@@ -8,141 +8,16 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                             QComboBox, QProgressBar, QTextEdit, QFileDialog,
                             QCheckBox, QGroupBox, QTableWidget, QTableWidgetItem,
-                            QHeaderView)
+                            QHeaderView, QMenu)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QMimeData, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QAction
 import youtube_downloader as yd
+
+# Import themes
+from themes import get_matrix_stylesheet, get_dark_stylesheet, AVAILABLE_THEMES
 
 # Config file for storing user preferences
 CONFIG_FILE = os.path.expanduser("~/.youtube_extractor_config.json")
-
-def get_matrix_stylesheet():
-    """Return the Matrix-inspired stylesheet."""
-    return """
-        QWidget {
-            font-family: 'Courier New', monospace;
-            font-size: 14px;
-            color: #00FF41;
-            background-color: #0D0208;
-        }
-        QMainWindow {
-            background-color: #0D0208;
-        }
-        QGroupBox {
-            font-weight: bold;
-            border: 1px solid #00FF41;
-            border-radius: 8px;
-            margin-top: 12px;
-            padding-top: 16px;
-            background-color: #0D0208;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px;
-            color: #00FF41;
-        }
-        QPushButton {
-            background-color: #003B00;
-            color: #00FF41;
-            padding: 8px 16px;
-            border-radius: 4px;
-            border: 1px solid #00FF41;
-            font-weight: bold;
-        }
-        QPushButton:hover {
-            background-color: #005000;
-            border: 1px solid #00FF00;
-        }
-        QPushButton:pressed {
-            background-color: #008000;
-        }
-        QPushButton:disabled {
-            background-color: #1A1A1A;
-            color: #3A3A3A;
-            border: 1px solid #3A3A3A;
-        }
-        QLineEdit, QComboBox, QTextEdit {
-            border: 1px solid #00FF41;
-            border-radius: 4px;
-            padding: 8px;
-            background-color: #0D0208;
-            color: #00FF41;
-        }
-        QLineEdit:focus, QComboBox:focus {
-            border: 1px solid #00FF00;
-        }
-        QProgressBar {
-            border: 1px solid #00FF41;
-            border-radius: 4px;
-            text-align: center;
-            background-color: #0D0208;
-            color: #000000;
-        }
-        QProgressBar::chunk {
-            background-color: #00FF41;
-            border-radius: 3px;
-        }
-        QTableWidget {
-            border: 1px solid #00FF41;
-            border-radius: 4px;
-            background-color: #0D0208;
-            gridline-color: #003B00;
-            color: #00FF41;
-            selection-background-color: transparent;
-            selection-color: #00FF41;
-        }
-        QTableWidget::item:selected {
-            background-color: transparent;
-            color: #00FF41;
-            border: 3px solid #00FF00;
-        }
-        QTableWidget::item:focus {
-            background-color: transparent;
-            color: #00FF41;
-            border: 3px solid #00FF00;
-        }
-        QHeaderView::section {
-            background-color: #003B00;
-            padding: 8px;
-            border: none;
-            font-weight: bold;
-            color: #00FF41;
-        }
-        QScrollBar:vertical {
-            border: none;
-            background: #0D0208;
-            width: 10px;
-            margin: 0px;
-        }
-        QScrollBar::handle:vertical {
-            background: #00FF41;
-            min-height: 20px;
-            border-radius: 5px;
-        }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-            height: 0px;
-        }
-        QCheckBox {
-            spacing: 8px;
-            color: #00FF41;
-        }
-        QCheckBox::indicator {
-            width: 18px;
-            height: 18px;
-            border: 1px solid #00FF41;
-        }
-        QCheckBox::indicator:checked {
-            background-color: #00FF41;
-        }
-        QLabel {
-            color: #00FF41;
-        }
-        QStatusBar {
-            color: #00FF41;
-            background-color: #0D0208;
-        }
-    """
 
 def load_config():
     """Load configuration from file."""
@@ -246,6 +121,9 @@ class YouTubeDownloaderGUI(QMainWindow):
         # Initialize UI components
         self.setup_ui()
         
+        # Create menu bar
+        self.setup_menu()
+        
         # Apply theme
         self.apply_theme(self.config.get("theme", "matrix"))
         
@@ -254,6 +132,65 @@ class YouTubeDownloaderGUI(QMainWindow):
         
         # Flag to prevent recursive cell change events
         self.is_updating_cell = False
+    
+    def setup_menu(self):
+        """Set up the application menu bar."""
+        menu_bar = self.menuBar()
+        
+        # File menu
+        file_menu = menu_bar.addMenu("File")
+        
+        # Open URLs file action
+        open_action = QAction("Open URLs File", self)
+        open_action.triggered.connect(self.open_urls_file)
+        file_menu.addAction(open_action)
+        
+        # Exit action
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # Settings menu
+        settings_menu = menu_bar.addMenu("Settings")
+        
+        # Theme submenu
+        theme_menu = QMenu("Theme", self)
+        
+        # Add theme options
+        for theme_name in AVAILABLE_THEMES:
+            theme_action = QAction(theme_name.capitalize(), self)
+            theme_action.setCheckable(True)
+            theme_action.setChecked(self.config.get("theme") == theme_name)
+            theme_action.triggered.connect(lambda checked, tn=theme_name: self.apply_theme(tn))
+            theme_menu.addAction(theme_action)
+        
+        settings_menu.addMenu(theme_menu)
+        
+        # Help menu
+        help_menu = menu_bar.addMenu("Help")
+        
+        # About action
+        about_action = QAction("About", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+    
+    def open_urls_file(self):
+        """Open a file containing YouTube URLs."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open URLs File", "", "Text Files (*.txt);;All Files (*)"
+        )
+        if file_path:
+            self.load_urls_from_file(file_path)
+    
+    def show_about(self):
+        """Show the about dialog."""
+        QMessageBox.about(
+            self,
+            "About YouTube Extractor",
+            "YouTube Extractor v1.0\n\n"
+            "A tool for downloading YouTube videos, transcripts, and generating summaries.\n\n"
+            "© 2024 All Rights Reserved"
+        )
     
     def setup_ui(self):
         """Set up the user interface components."""
@@ -428,8 +365,15 @@ class YouTubeDownloaderGUI(QMainWindow):
     
     def apply_theme(self, theme_name):
         """Apply the selected theme to the application."""
+        # Update theme in all theme actions
+        for action in self.menuBar().findChild(QMenu, "Theme").actions():
+            action.setChecked(action.text().lower() == theme_name.capitalize())
+        
+        # Apply the selected theme stylesheet
         if theme_name == "matrix":
             self.setStyleSheet(get_matrix_stylesheet())
+        elif theme_name == "dark":
+            self.setStyleSheet(get_dark_stylesheet())
         # Add more themes here as needed
         
         # Save the theme preference
