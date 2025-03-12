@@ -1,5 +1,12 @@
-youtube_transcript_api==0.6.1
+PyQt6>=6.0.0
+yt-dlp>=2023.3.4
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+youtube-transcript-api>=0.6.0
+pyinstaller>=6.0.0
 openai==1.12.0
-python-dotenv==1.0.1
-yt-dlp==2024.3.10
-tiktoken==0.6.0 
+tiktoken==0.6.0
+flask==3.0.2
+flask-wtf==1.2.1
+certifi==2024.2.2
+browser-cookie3==0.19.1 
