@@ -116,6 +116,14 @@ def handle_progress(d: Dict[str, Union[str, float, int]]) -> None:
         if '_total_bytes_str' in d:
             total = d.get('total_bytes', 0)
             downloaded = d.get('downloaded_bytes', 0)
+            total_str = d.get('_total_bytes_str', '0 MiB')
+            downloaded_str = d.get('_downloaded_bytes_str', '0 MiB')
+            percent = d.get('_percent_str', '0%').strip()
+            speed_str = d.get('_speed_str', '0 KiB/s')
+            eta_str = d.get('_eta_str', 'N/A')
+            
+            # Log detailed progress information for the GUI to parse
+            logger.info(f"Downloading: {percent} | {downloaded_str}/{total_str} | Speed: {speed_str} | ETA: {eta_str}")
             
             if not current_download_progress:
                 current_download_progress = tqdm(
