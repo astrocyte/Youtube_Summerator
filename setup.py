@@ -5,7 +5,7 @@ Usage:
     python setup.py py2app
 """
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 APP = ['youtube_downloader_gui.py']
 DATA_FILES = ['app_icon.icns']
@@ -34,4 +34,35 @@ setup(
     data_files=DATA_FILES,
     options={'py2app': OPTIONS},
     setup_requires=['py2app'],
+)
+
+"""Setup configuration for the YouTube Summarator package."""
+setup(
+    name="ytsummarator",
+    version="1.0.0",
+    description="A tool for generating summaries of YouTube videos",
+    author="Your Name",
+    author_email="your.email@example.com",
+    packages=find_packages(),
+    install_requires=[
+        "openai>=1.0.0",
+        "youtube-transcript-api>=0.6.1",
+    ],
+    entry_points={
+        "console_scripts": [
+            "ytsummarator=ytsummarator.__main__:main",
+        ],
+    },
+    python_requires=">=3.7",
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+    ],
 ) 

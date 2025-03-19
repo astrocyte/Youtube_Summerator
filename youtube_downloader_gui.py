@@ -11,8 +11,10 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QCheckBox, QGroupBox, QTableWidget, QTableWidgetItem,
                             QHeaderView, QMenu, QMessageBox, QSizePolicy)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QMimeData, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QAction
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QAction, QFont, QFontDatabase
 import youtube_downloader as yd
+import yt_dlp
+from ytsummarator import SummaryDepth
 
 # Import themes
 from themes import get_matrix_stylesheet, get_dark_stylesheet, AVAILABLE_THEMES
@@ -20,12 +22,29 @@ from themes import get_matrix_stylesheet, get_dark_stylesheet, AVAILABLE_THEMES
 # Config file for storing user preferences
 CONFIG_FILE = os.path.expanduser("~/.youtube_extractor_config.json")
 
+# Configure default font
+def configure_application_font():
+    """Configure the application's default font."""
+    # Try each font in order until we find one that works
+    fonts = ["Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "Monospace"]
+    
+    for font_name in fonts:
+        font = QFont(font_name, 10)
+        if font.exactMatch():  # Check if the font is available
+            QApplication.setFont(font)
+            return
+    
+    # If no monospace font is found, use system default
+    QApplication.setFont(QFont("", 10))
+
 def load_config():
     """Load configuration from file."""
     default_config = {
         "last_output_folder": "",
         "last_format": "mp4",
         "last_quality": "best",
+        "last_depth": SummaryDepth.DETAILED.value,
+        "last_model": "gpt-3.5-turbo-16k",  # Updated default model (using larger context window)
         "window_width": 900,
         "window_height": 700,
         "theme": "matrix",
@@ -66,12 +85,13 @@ class DownloadWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
     
-    def __init__(self, url, format_type, quality, output_folder):
+    def __init__(self, url, format_type, quality, output_folder, custom_title=None):
         super().__init__()
         self.url = url
         self.format_type = format_type
         self.quality = quality
         self.output_folder = output_folder
+        self.custom_title = custom_title
         self.is_cancelled = False
     
     def run(self):
@@ -93,8 +113,35 @@ class DownloadWorker(QThread):
             original_logger = yd.logger
             yd.logger = thread_logger
             
-            # Download the video with the specified output folder
-            yd.download_video(self.url, self.format_type, self.quality, self.output_folder)
+            # Configure yt-dlp options
+            ydl_opts = {
+                'format': yd.get_format_spec(self.format_type, self.quality),
+                'progress_hooks': [lambda d: yd.handle_progress(d)],
+                'restrictfilenames': True,
+                'windowsfilenames': True,  # Also sanitize for Windows
+                'overwrites': True,  # Allow overwriting files
+                'quiet': not yd.DEBUG_MODE,
+                'no_warnings': False,
+                'extract_flat': False,
+                'retries': yd.MAX_RETRIES,
+                'fragment_retries': yd.MAX_RETRIES,
+                'file_access_retries': yd.MAX_RETRIES,
+                'extractor_retries': yd.MAX_RETRIES,
+                'ignoreerrors': False,
+            }
+            
+            # Set output template based on custom title or default
+            if self.custom_title:
+                sanitized_title = self.custom_title.replace(' ', '_')
+                # Remove any characters that might cause issues
+                sanitized_title = ''.join(c for c in sanitized_title if c.isalnum() or c in '_-')
+                ydl_opts['outtmpl'] = os.path.join(self.output_folder, f"{sanitized_title}.%(ext)s")
+            else:
+                ydl_opts['outtmpl'] = os.path.join(self.output_folder, '%(title)s.%(ext)s')
+            
+            # Download the video
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([self.url])
             
             # Restore the original logger
             yd.logger = original_logger
@@ -271,23 +318,25 @@ class SummaryWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
     
-    def __init__(self, urls, output_folder):
+    def __init__(self, urls, output_folder, depth, model):
         super().__init__()
         self.urls = urls
         self.output_folder = output_folder
         self.is_cancelled = False
+        self.depth = depth
+        self.model = model
     
     def run(self):
         """Main thread execution method."""
         if self.is_cancelled:
             return
-            
+        
         try:
             import ytsummarator as yt_sum
             for url in self.urls:
                 if self.is_cancelled:
                     break
-                    
+                
                 try:
                     self.progress.emit(f"Getting video information for {url}")
                     video_id = yt_sum.extract_video_id(url)
@@ -295,7 +344,7 @@ class SummaryWorker(QThread):
                         self.progress.emit(f"❌ Error: Could not extract video ID from URL: {url}")
                         self.progress.emit("---")
                         continue
-                        
+                    
                     # Get video title
                     video_title = yt_sum.get_video_title(video_id)
                     self.progress.emit(f"Processing video: {video_title}")
@@ -304,22 +353,35 @@ class SummaryWorker(QThread):
                     original_get_filename = yt_sum.get_next_available_filename
                     
                     # Create a wrapper function that replaces spaces with underscores
-                    def underscore_filename_wrapper(base_filename, extension):
+                    def underscore_filename_wrapper(base_filename, extension, output_dir=None):
                         base_filename = base_filename.replace(" ", "_")
-                        return original_get_filename(base_filename, extension)
+                        return original_get_filename(base_filename, extension, output_dir)
                     
                     # Replace the function temporarily
                     yt_sum.get_next_available_filename = underscore_filename_wrapper
                     
                     # First get the transcript
                     self.progress.emit(f"📝 Generating transcript...")
-                    transcript_file = yt_sum.get_transcript(url, output_folder=self.output_folder)
+                    transcript_file, transcript_text = yt_sum.get_transcript(url, output_dir=self.output_folder)
+                    if not transcript_file or not transcript_text:
+                        self.progress.emit(f"❌ Error: Could not get transcript for {url}")
+                        self.progress.emit("---")
+                        continue
                     self.progress.emit(f"✓ Transcript saved to: {transcript_file}")
                     
-                    # Now generate the summary
-                    self.progress.emit(f"🤖 Generating AI summary...")
-                    summary_file = yt_sum.get_summary(url, output_folder=self.output_folder)
-                    self.progress.emit(f"✓ Summary saved to: {summary_file}")
+                    # Now generate the summary with the selected depth
+                    self.progress.emit(f"🤖 Generating AI summary (Depth: {self.depth.value.capitalize()}, Model: {self.model})...")
+                    summary = yt_sum.generate_summary(transcript_text, depth=self.depth, model=self.model)
+                    if summary:
+                        # Add the title at the beginning of the summary
+                        summary_with_title = f"# {video_title}\n\n{summary}"
+                        base_summary_file = f"{video_title} - summary"
+                        summary_file = yt_sum.get_next_available_filename(base_summary_file, ".md", self.output_folder)
+                        with open(summary_file, 'w', encoding='utf-8') as f:
+                            f.write(summary_with_title)
+                        self.progress.emit(f"✓ Summary saved to: {summary_file}")
+                    else:
+                        self.progress.emit(f"❌ Error: Could not generate summary for {url}")
                     
                     # Restore the original function
                     yt_sum.get_next_available_filename = original_get_filename
@@ -488,11 +550,13 @@ class YouTubeDownloaderGUI(QMainWindow):
         main_layout.addWidget(table_label)
         
         self.url_table = QTableWidget()
-        self.url_table.setColumnCount(2)
-        self.url_table.setHorizontalHeaderLabels(["YouTube URLs", "Video Title"])
+        self.url_table.setColumnCount(3)  # Added Status column
+        self.url_table.setHorizontalHeaderLabels(["YouTube URLs", "Video Title", "Status"])
         self.url_table.setRowCount(10)
         self.url_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.url_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.url_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.url_table.setColumnWidth(2, 120)  # Fixed width for Status column
         
         # Set row height to be more compact
         self.url_table.verticalHeader().setDefaultSectionSize(30)
@@ -501,8 +565,47 @@ class YouTubeDownloaderGUI(QMainWindow):
         self.url_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.url_table.setMinimumHeight(200)  # Reduced minimum height
         
+        # Enable context menu
+        self.url_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.url_table.customContextMenuRequested.connect(self.show_table_context_menu)
+        
         self.url_table.cellChanged.connect(self.on_cell_changed)
         main_layout.addWidget(self.url_table)
+    
+    def show_table_context_menu(self, position):
+        """Show context menu for the URL table."""
+        menu = QMenu()
+        
+        # Get the item at the clicked position
+        item = self.url_table.itemAt(position)
+        
+        # Add paste action
+        paste_action = QAction("Paste", self)
+        paste_action.triggered.connect(lambda: self.paste_to_table(self.url_table.currentRow(), 0))
+        menu.addAction(paste_action)
+        
+        # Show the menu at the cursor position
+        menu.exec(self.url_table.viewport().mapToGlobal(position))
+
+    def paste_to_table(self, row, column):
+        """Paste clipboard content into the table cell."""
+        clipboard = QApplication.clipboard()
+        text = clipboard.text()
+        
+        if text and row >= 0:
+            # If the current row already has content, find the first empty row
+            if self.url_table.item(row, 0) and self.url_table.item(row, 0).text().strip():
+                for r in range(self.url_table.rowCount()):
+                    if not self.url_table.item(r, 0) or not self.url_table.item(r, 0).text().strip():
+                        row = r
+                        break
+                else:
+                    # If no empty row found, add a new one
+                    self.url_table.setRowCount(self.url_table.rowCount() + 1)
+                    row = self.url_table.rowCount() - 1
+            
+            # Set the text in the cell
+            self.url_table.setItem(row, column, QTableWidgetItem(text))
     
     def setup_options(self, main_layout):
         """Set up the options section with format, quality, and output folder selection."""
@@ -552,6 +655,27 @@ class YouTubeDownloaderGUI(QMainWindow):
         quality_layout.addWidget(self.quality_combo)
         options_layout.addLayout(quality_layout)
         
+        # Summary depth selection
+        depth_layout = QHBoxLayout()
+        depth_label = QLabel("Summary Depth:")
+        depth_label.setStyleSheet("color: #00FF41;")
+        depth_layout.addWidget(depth_label)
+        self.depth_combo = QComboBox()
+        self.depth_combo.setMinimumHeight(30)
+        self.depth_combo.setMinimumWidth(120)
+        self.depth_combo.addItems([depth.value.capitalize() for depth in SummaryDepth])
+        
+        # Set the last used depth if available
+        last_depth = self.config.get("last_depth", SummaryDepth.DETAILED.value)
+        depth_index = self.depth_combo.findText(last_depth.capitalize())
+        if depth_index >= 0:
+            self.depth_combo.setCurrentIndex(depth_index)
+        
+        # Connect depth change to save config
+        self.depth_combo.currentTextChanged.connect(self.save_depth_preference)
+        depth_layout.addWidget(self.depth_combo)
+        options_layout.addLayout(depth_layout)
+        
         # Output folder selection
         output_layout = QHBoxLayout()
         output_label = QLabel("Output:")
@@ -567,7 +691,7 @@ class YouTubeDownloaderGUI(QMainWindow):
             
         browse_output_button = QPushButton("Browse")
         browse_output_button.setMinimumHeight(30)
-        browse_output_button.setFixedWidth(80)
+        browse_output_button.setMinimumWidth(100)
         browse_output_button.clicked.connect(self.browse_output_folder)
         output_layout.addWidget(self.output_folder_input)
         output_layout.addWidget(browse_output_button)
@@ -600,6 +724,36 @@ class YouTubeDownloaderGUI(QMainWindow):
         action_layout.addWidget(self.summary_button)
         
         main_layout.addLayout(action_layout)
+
+        # Add model selection below action buttons
+        model_layout = QHBoxLayout()
+        model_label = QLabel("Model:")
+        model_label.setStyleSheet("color: #00FF41;")
+        model_layout.addWidget(model_label)
+        
+        self.model_combo = QComboBox()
+        self.model_combo.setMinimumHeight(30)
+        self.model_combo.setMinimumWidth(120)
+        self.model_combo.addItems([
+            "gpt-4-turbo",      # Latest GPT-4 model
+            "gpt-4",            # Standard GPT-4
+            "gpt-4-32k",        # GPT-4 with larger context window
+            "gpt-3.5-turbo",    # Standard GPT-3.5
+            "gpt-3.5-turbo-16k" # GPT-3.5 with larger context window
+        ])
+        
+        # Set the last used model if available
+        last_model = self.config.get("last_model", "gpt-3.5-turbo-16k")
+        model_index = self.model_combo.findText(last_model)
+        if model_index >= 0:
+            self.model_combo.setCurrentIndex(model_index)
+        
+        # Connect model change to save config
+        self.model_combo.currentTextChanged.connect(self.save_model_preference)
+        model_layout.addWidget(self.model_combo)
+        model_layout.addStretch()  # Add stretch to keep the dropdown left-aligned
+        
+        main_layout.addLayout(model_layout)
     
     def setup_progress_section(self, main_layout):
         """Set up the progress section with progress bar and text area."""
@@ -613,6 +767,16 @@ class YouTubeDownloaderGUI(QMainWindow):
         self.progress_bar.setMinimumHeight(20)  # Reduced height
         self.progress_bar.setFormat("0% - Ready")  # Simpler initial format
         self.progress_bar.setTextVisible(True)  # Ensure text is visible
+        # Set progress bar text color to red
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                text-align: center;
+                color: red;
+            }
+            QProgressBar::chunk {
+                background-color: #00FF41;
+            }
+        """)
         progress_layout.addWidget(self.progress_bar)
         
         self.progress_text = QTextEdit()
@@ -656,6 +820,16 @@ class YouTubeDownloaderGUI(QMainWindow):
         self.config["last_quality"] = quality
         save_config(self.config)
     
+    def save_depth_preference(self, depth):
+        """Save the selected summary depth to config."""
+        self.config["last_depth"] = depth.lower()
+        save_config(self.config)
+    
+    def save_model_preference(self, model):
+        """Save the selected model to config."""
+        self.config["last_model"] = model
+        save_config(self.config)
+    
     def dragEnterEvent(self, event: QDragEnterEvent):
         """Handle drag enter events for files."""
         if event.mimeData().hasUrls():
@@ -688,12 +862,14 @@ class YouTubeDownloaderGUI(QMainWindow):
             for row in range(self.url_table.rowCount()):
                 self.url_table.setItem(row, 0, None)
                 self.url_table.setItem(row, 1, None)
+                self.url_table.setItem(row, 2, None)  # Clear status
             
             # Add new URLs
             for i, url in enumerate(urls):
                 if i >= self.url_table.rowCount():
                     self.url_table.setRowCount(i + 1)
                 self.url_table.setItem(i, 0, QTableWidgetItem(url))
+                self.url_table.setItem(i, 2, QTableWidgetItem("Pending"))  # Set initial status
                 # Titles will be fetched automatically by the cell changed event
             
             self.update_progress(f"Loaded {len(urls)} URLs from {os.path.basename(file_path)}")
@@ -718,30 +894,68 @@ class YouTubeDownloaderGUI(QMainWindow):
             self.is_updating_cell = False
     
     def fetch_video_title(self, row, url):
-        """Fetch the video title in a separate thread."""
+        """Fetch the video title in a separate thread with caching."""
         def fetch_title():
             try:
-                # Extract video ID
+                # Check cache first
+                cache_file = os.path.join(os.path.expanduser("~"), ".youtube_extractor_cache.json")
+                cache = {}
+                if os.path.exists(cache_file):
+                    try:
+                        with open(cache_file, 'r') as f:
+                            cache = json.load(f)
+                    except json.JSONDecodeError:
+                        pass
+
                 video_id = yd.extract_video_id(url)
                 if not video_id:
+                    self.update_progress(f"❌ Invalid YouTube URL format: {url}")
+                    self.update_title_signal.emit(row, "Invalid URL")
                     return
-                    
-                # Use yt-dlp to get video info
-                import yt_dlp
+
+                # Check cache for this video ID
+                if video_id in cache and time.time() - cache[video_id]['timestamp'] < 86400:  # 24 hour cache
+                    self.update_title_signal.emit(row, cache[video_id]['title'])
+                    return
+
+                # Fetch from YouTube if not in cache
                 ydl_opts = {
                     'quiet': True,
                     'no_warnings': True,
                     'extract_flat': True,
+                    'ignoreerrors': True,
+                    'no_color': True,
                 }
                 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    title = info.get('title', 'Unknown Title')
-                    
-                    # Update the title cell in the main thread
-                    self.update_title_signal.emit(row, title)
+                    try:
+                        info = ydl.extract_info(url, download=False)
+                        if info is None:
+                            self.update_progress(f"❌ Could not fetch video info: {url}")
+                            self.update_title_signal.emit(row, "Unavailable")
+                            return
+                        
+                        title = info.get('title', 'Unknown Title')
+                        
+                        # Update cache
+                        cache[video_id] = {
+                            'title': title,
+                            'timestamp': time.time()
+                        }
+                        try:
+                            with open(cache_file, 'w') as f:
+                                json.dump(cache, f)
+                        except Exception as e:
+                            print(f"Error saving to cache: {str(e)}")
+                        
+                        # Update the title cell in the main thread
+                        self.update_title_signal.emit(row, title)
+                    except Exception as e:
+                        self.update_progress(f"❌ Error fetching title: {str(e)}")
+                        self.update_title_signal.emit(row, "Error")
             except Exception as e:
-                self.update_progress(f"Error fetching title: {str(e)}")
+                self.update_progress(f"❌ Error processing URL: {str(e)}")
+                self.update_title_signal.emit(row, "Error")
             finally:
                 # Remove thread from tracking list when done
                 if thread in self.running_threads:
@@ -774,19 +988,25 @@ class YouTubeDownloaderGUI(QMainWindow):
     
     def update_progress(self, message):
         """Update progress text and progress bar."""
-        self.progress_text.append(message)
-        
-        # Function to strip ANSI color codes
-        def strip_ansi_codes(text):
+        # Function to strip ANSI color codes and other control sequences
+        def clean_text(text):
             import re
+            # Pattern matches all ANSI escape sequences
             ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-            return ansi_escape.sub('', text)
+            # First remove ANSI escape sequences
+            text = ansi_escape.sub('', text)
+            # Replace other problematic characters
+            text = text.replace('\x1b', '').replace('\r', '').replace('\x08', '')
+            # Remove any other control characters except newline
+            text = ''.join(char for char in text if char == '\n' or ord(char) >= 32)
+            return text
+
+        # Clean the message before processing
+        clean_message = clean_text(message)
         
-        # Check for our formatted download progress message
-        if "Downloading:" in message and "|" in message:
+        # Check for download progress message
+        if "Downloading:" in clean_message and "|" in clean_message:
             try:
-                # Strip ANSI color codes and split the message
-                clean_message = strip_ansi_codes(message)
                 parts = clean_message.split("|")
                 
                 # Parse the percentage
@@ -801,44 +1021,61 @@ class YouTubeDownloaderGUI(QMainWindow):
                 speed = parts[2].strip().replace("Speed:", "").strip()
                 eta = parts[3].strip().replace("ETA:", "").strip()
                 
-                # Update progress bar
+                # Update progress bar with all information
                 self.progress_bar.setValue(percent)
                 self.progress_bar.setFormat(f"{percent}% - {downloaded_size}/{total_size} - {speed} - ETA: {eta}")
-            except (IndexError, ValueError) as e:
-                # Fall back to basic progress display if parsing fails
-                print(f"Error parsing progress: {e}")
-                pass
-        # Handle legacy format for backward compatibility
-        elif "Downloading" in message and "%" in message:
-            try:
-                # Strip ANSI color codes first
-                clean_message = strip_ansi_codes(message)
                 
-                # Extract percentage and other information
+                # Don't add download progress messages to text area
+                return
+                
+            except (IndexError, ValueError):
+                pass
+        # Handle legacy format
+        elif "Downloading" in clean_message and "%" in clean_message:
+            try:
                 percent_text = clean_message.split('%')[0].split()[-1]
                 percent = int(float(percent_text))
                 self.progress_bar.setValue(percent)
                 
-                # Update progress bar format with more information
                 if "ETA" in clean_message:
-                    eta = clean_message.split("ETA")[1].strip() if "ETA" in clean_message else "unknown"
-                    speed = clean_message.split("at")[1].split("ETA")[0].strip() if "at" in clean_message and "ETA" in clean_message else ""
+                    eta = clean_message.split("ETA")[1].strip()
+                    speed = clean_message.split("at")[1].split("ETA")[0].strip()
                     self.progress_bar.setFormat(f"{percent}% - {speed} - ETA: {eta}")
                 else:
                     self.progress_bar.setFormat(f"{percent}% - Downloading...")
+                    
+                # Don't add download progress messages to text area
+                return
+                
             except (IndexError, ValueError):
                 pass
-        elif "completed" in message.lower():
+        elif "completed" in clean_message.lower():
             self.progress_bar.setValue(100)
-            self.progress_bar.setFormat("100% - Download Complete")
+            self.progress_bar.setFormat("100% - Complete")
         
-        # Auto-scroll to the bottom
-        scrollbar = self.progress_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        # Only add non-progress messages to the text area
+        if not any(x in clean_message for x in ["Downloading:", "ETA:", "Speed:", "%"]):
+            self.progress_text.append(clean_message)
+            # Auto-scroll to the bottom
+            scrollbar = self.progress_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
     
-    def download_finished(self, success, message):
+    def update_row_status(self, url, status, color="#00FF41"):
+        """Update the status column for a given URL."""
+        for row in range(self.url_table.rowCount()):
+            url_item = self.url_table.item(row, 0)
+            if url_item and url_item.text().strip() == url:
+                status_item = QTableWidgetItem(status)
+                status_item.setForeground(Qt.GlobalColor.red if "Error" in status else Qt.GlobalColor.green)
+                self.url_table.setItem(row, 2, status_item)
+                break
+    
+    def download_finished(self, success, message, url):
         """Handle download completion."""
         self.update_progress(message)
+        
+        # Update status in table
+        self.update_row_status(url, "✓ Complete" if success else "❌ Error")
         
         # If there are more URLs to process, start the next one
         if hasattr(self, 'current_urls') and self.current_urls:
@@ -886,8 +1123,36 @@ class YouTubeDownloaderGUI(QMainWindow):
             self.transcript_button.setEnabled(True)
             self.summary_button.setEnabled(True)
     
+    def handle_network_error(self, error, retry_count=0, max_retries=3):
+        """Handle network-related errors with retry logic."""
+        if retry_count >= max_retries:
+            self.update_progress(f"❌ Network error after {max_retries} retries: {str(error)}")
+            return False
+
+        wait_time = 2 ** retry_count  # Exponential backoff
+        self.update_progress(f"Network error occurred. Retrying in {wait_time} seconds...")
+        time.sleep(wait_time)
+        return True
+
+    def is_network_error(self, error):
+        """Check if an error is network-related."""
+        error_str = str(error).lower()
+        network_errors = [
+            "connection refused",
+            "network unreachable",
+            "timeout",
+            "connection reset",
+            "connection error",
+            "ssl error",
+            "socket error"
+        ]
+        return any(err in error_str for err in network_errors)
+
     def download_single(self, url):
-        """Download a single video."""
+        """Download a single video with network error handling."""
+        # Update status to "Processing"
+        self.update_row_status(url, "Processing...")
+        
         # If there's already a download thread running, wait for it to finish
         if self.download_thread and self.download_thread.isRunning():
             # Cancel the current download
@@ -907,19 +1172,45 @@ class YouTubeDownloaderGUI(QMainWindow):
             if self.download_thread.isRunning():
                 self.download_thread.terminate()
                 self.download_thread.wait()
-        
+
         format_type = self.format_combo.currentText()
         quality = self.quality_combo.currentText()
         output_folder = self.output_folder_input.text()
 
-        self.update_progress(f"Starting download for: {url}")
+        # Find the custom title if available
+        custom_title = None
+        for row in range(self.url_table.rowCount()):
+            url_item = self.url_table.item(row, 0)
+            if url_item and url_item.text().strip() == url:
+                title_item = self.url_table.item(row, 1)
+                if title_item and title_item.text().strip():
+                    custom_title = title_item.text().strip()
+                break
+
+        retry_count = 0
+        max_retries = 3
+        while retry_count <= max_retries:
+            try:
+                self.update_progress(f"Starting download for: {url}")
+                
+                # Create a new download worker with the custom title
+                self.download_thread = DownloadWorker(url, format_type, quality, output_folder, custom_title)
+                self.download_thread.progress.connect(self.update_progress)
+                self.download_thread.finished.connect(lambda success, msg: self.download_finished(success, msg, url))
+                self.download_thread.start()
+                return
+                
+            except Exception as e:
+                if self.is_network_error(e):
+                    if not self.handle_network_error(e, retry_count, max_retries):
+                        self.update_row_status(url, "❌ Network Error")
+                        break
+                    retry_count += 1
+                else:
+                    self.update_progress(f"❌ Error: {str(e)}")
+                    self.update_row_status(url, "❌ Error")
+                    break
         
-        # Create a new download worker
-        self.download_thread = DownloadWorker(url, format_type, quality, output_folder)
-        self.download_thread.progress.connect(self.update_progress)
-        self.download_thread.finished.connect(self.download_finished)
-        self.download_thread.start()
-    
     def save_transcripts(self):
         """Save transcripts for videos in the table."""
         self.progress_text.clear()
@@ -959,30 +1250,32 @@ class YouTubeDownloaderGUI(QMainWindow):
         self.transcript_thread = None
     
     def generate_summaries(self):
-        """Generate summaries for videos in the table."""
-        self.progress_text.clear()
+        """Generate AI summaries for the videos."""
         urls = self.get_urls_from_table()
-
         if not urls:
-            self.update_progress("Please enter at least one valid YouTube URL in the table.")
+            self.update_progress("No URLs to process")
             return
-
-        # Check if output folder is selected
+        
         output_folder = self.output_folder_input.text()
         if not output_folder:
-            self.update_progress("Please select an output folder first.")
+            self.update_progress("Please select an output folder")
             return
-
-        self.update_progress(f"Found {len(urls)} URLs to process for summaries")
+        
+        # Get the current depth and model settings
+        depth = SummaryDepth(self.depth_combo.currentText().lower())
+        model = self.model_combo.currentText()
+        
+        # Create and start the summary thread
+        self.summary_thread = SummaryWorker(urls, output_folder, depth, model)
+        self.summary_thread.progress.connect(self.update_progress)
+        self.summary_thread.finished.connect(self.summary_finished)
+        self.running_threads.append(self.summary_thread)
+        self.summary_thread.start()
+        
+        # Disable buttons while processing
         self.download_button.setEnabled(False)
         self.transcript_button.setEnabled(False)
         self.summary_button.setEnabled(False)
-        
-        # Create and start the summary worker thread with output folder
-        self.summary_thread = SummaryWorker(urls, output_folder)
-        self.summary_thread.progress.connect(self.update_progress)
-        self.summary_thread.finished.connect(self.summary_finished)
-        self.summary_thread.start()
     
     def summary_finished(self, success, message):
         """Handle summary generation completion."""
@@ -1003,6 +1296,37 @@ class YouTubeDownloaderGUI(QMainWindow):
         save_config(self.config)
         super().resizeEvent(event)
 
+    def cleanup_resources(self):
+        """Clean up resources and temporary files."""
+        try:
+            # Clear progress text to free memory
+            self.progress_text.clear()
+            
+            # Clear table items
+            self.url_table.clearContents()
+            
+            # Clear cache if it's too old
+            cache_file = os.path.join(os.path.expanduser("~"), ".youtube_extractor_cache.json")
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'r') as f:
+                        cache = json.load(f)
+                    # Remove entries older than 7 days
+                    current_time = time.time()
+                    cache = {k: v for k, v in cache.items() 
+                            if current_time - v['timestamp'] < 604800}  # 7 days
+                    with open(cache_file, 'w') as f:
+                        json.dump(cache, f)
+                except Exception as e:
+                    print(f"Error cleaning cache: {str(e)}")
+
+            # Force garbage collection
+            import gc
+            gc.collect()
+
+        except Exception as e:
+            print(f"Error during cleanup: {str(e)}")
+
     def closeEvent(self, event):
         """Handle window close event to ensure threads are properly terminated."""
         # Save the current output folder path before closing
@@ -1010,6 +1334,9 @@ class YouTubeDownloaderGUI(QMainWindow):
         if output_folder:
             self.config["last_output_folder"] = output_folder
             save_config(self.config)
+        
+        # Clean up resources
+        self.cleanup_resources()
         
         # Properly terminate the download thread if it's running
         if self.download_thread and self.download_thread.isRunning():
@@ -1051,7 +1378,13 @@ class YouTubeDownloaderGUI(QMainWindow):
         event.accept()
 
 def main():
+    # Create QApplication instance
     app = QApplication(sys.argv)
+    
+    # Configure application font
+    configure_application_font()
+    
+    # Create and show main window
     window = YouTubeDownloaderGUI()
     window.show()
     
@@ -1067,4 +1400,6 @@ def main():
                 window.download_thread.wait()
 
 if __name__ == "__main__":
+    # Suppress Qt warnings about fonts
+    os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
     main() 

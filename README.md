@@ -1,143 +1,117 @@
-# YouTube Video Downloader
+# YouTube Summarator
 
-A robust and feature-rich YouTube video downloader with support for various formats, qualities, and authentication methods.
+A powerful tool for downloading YouTube videos, generating transcripts, and creating AI-powered summaries.
 
 ## Features
 
-- Download videos in multiple formats (mp4, webm, mkv, mp3, m4a)
-- Multiple quality options (up to 4K)
-- Batch download support from URL file
-- Browser cookie integration for premium content
-- Progress bar visualization
-- Comprehensive logging system
-- Automatic retry mechanism with exponential backoff
-- Support for age-restricted and premium videos (with authentication)
+### GUI Interface
+- Modern, user-friendly interface with Matrix and Dark themes
+- Support for multiple video processing
+- Drag and drop support:
+  - Drag and drop individual YouTube URLs directly into the table
+  - Drag and drop text files containing multiple URLs (one URL per line)
+- Automatic video title fetching
+- Configurable options:
+  - Video format (mp4, mp3, m4a, webm, mkv)
+  - Video quality (best, 1080p, 720p, 480p, 360p)
+  - Summary depth (concise, balanced, detailed)
+  - AI model selection (gpt-3.5-turbo, gpt-4)
+- Progress tracking and status updates
+- Persistent settings and preferences
+
+### Core Features
+- Download YouTube videos in various formats
+- Generate accurate transcripts
+- Create AI-powered summaries with different levels of detail
+- Support for multiple videos in batch processing
+- Configurable output formats and quality settings
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd youtube-downloader
+git clone https://github.com/yourusername/youtube_summarator.git
+cd youtube_summarator
 ```
 
-2. Create a virtual environment (recommended):
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. Install dependencies:
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
+3. Install the package in development mode:
+```bash
+pip install -e .
+```
+
 ## Usage
 
-### Basic Usage
-
-Download a single video:
+### GUI Mode
+Run the application with a graphical interface:
 ```bash
-python youtube_downloader.py <youtube-url>
+python run_gui.py
 ```
 
-Download with specific format and quality:
+Features:
+- Start with 5 empty rows for URLs by default
+- Add or remove rows as needed
+- Paste URLs directly into cells
+- Drag and drop URLs or text files
+- Select output folder and processing options
+- Monitor progress in real-time
+
+### Command Line Mode
+Run the application from the command line:
 ```bash
-python youtube_downloader.py <youtube-url> mp4 1080p
+python -m ytsummarator --url "https://www.youtube.com/watch?v=VIDEO_ID" --depth detailed
 ```
 
-### Batch Download
-
-Create a text file (e.g., `urls.txt`) with YouTube URLs (one per line):
-```
-https://www.youtube.com/watch?v=video1
-https://www.youtube.com/watch?v=video2
-```
-
-Then run:
-```bash
-python youtube_downloader.py urls.txt
-```
-
-### Available Formats
-- mp4 (default)
-- webm
-- mkv
-- mp3 (audio only)
-- m4a (audio only)
-
-### Available Qualities
-- best (default)
-- 2160p (4K)
-- 1440p
-- 1080p
-- 720p
-- 480p
-- 360p
-- 240p
-- 144p
+Options:
+- `--url`: YouTube video URL
+- `--depth`: Summary depth (concise, balanced, detailed)
+- `--model`: AI model to use (gpt-3.5-turbo, gpt-4)
+- `--config`: Path to configuration file
 
 ## Configuration
 
-The script can be configured using environment variables. Create a `.env` file with any of these settings:
+The application stores user preferences in `~/.youtube_extractor_config.json`, including:
+- Last used output folder
+- Preferred video format and quality
+- Summary depth and model settings
+- Window size and position
+- Theme preference
 
-```env
-OUTPUT_DIR=Downloaded_Videos
-DEFAULT_FORMAT=mp4
-DEFAULT_QUALITY=best
-COOKIES_FILE=youtube_cookies.txt
-COOKIE_CACHE_FILE=.youtube_cookie_cache.json
-COOKIE_CACHE_DURATION=3600
-DEBUG_MODE=false
-MAX_RETRIES=3
-LOG_DIR=logs
-USER_AGENT=Mozilla/5.0 ...
+## Development
+
+### Project Structure
+```
+ytsummarator/
+├── core/           # Core functionality
+├── gui/            # GUI components
+├── models/         # Data models
+├── config/         # Configuration
+├── services/       # External services
+└── utils/          # Utility functions
 ```
 
-## Authentication
-
-For premium content or age-restricted videos, the script will automatically try to use cookies from your browser. Supported browsers:
-- Chrome
-- Firefox
-
-If automatic cookie extraction fails, you can manually export cookies using the Cookie-Editor browser extension:
-
-1. Install the "Cookie-Editor" extension
-2. Go to youtube.com and log in
-3. Click the Cookie-Editor extension icon
-4. Click "Export" -> "Export as Netscape HTTP Cookie File"
-5. Save as `youtube_cookies.txt` in the script directory
-
-## Logging
-
-Logs are stored in the `logs` directory:
-- `youtube_downloader_YYYYMMDD.log`: General logs
-- `youtube_downloader_errors_YYYYMMDD.log`: Error logs only
-
-Enable debug mode for verbose logging:
+### Building the Application
+To create a standalone executable:
 ```bash
-DEBUG_MODE=true python youtube_downloader.py <youtube-url>
+# For macOS
+./ytsummarator/scripts/build_mac_app.sh
+
+# For other platforms
+./ytsummarator/scripts/build_app.sh
 ```
-
-## Error Handling
-
-The script includes comprehensive error handling for:
-- Network issues
-- Authentication problems
-- Age restrictions
-- Region restrictions
-- SSL certificate issues
-- Video availability
-- Format/quality issues
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Disclaimer
-
-This tool is for personal use only. Please respect YouTube's terms of service and content creators' rights. 
+This project is licensed under the MIT License - see the LICENSE file for details. 
